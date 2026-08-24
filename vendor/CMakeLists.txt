@@ -67,6 +67,27 @@ target_include_directories(slang INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/slang/in
 if(WIN32)
     set_target_properties(slang PROPERTIES
         IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/slang/lib/slang-compiler.lib")
+elseif(APPLE)
+    if(NOT DEFINED BE_SLANG_MACOS_ARCH)
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+            set(BE_SLANG_MACOS_ARCH "aarch64")
+        else()
+            set(BE_SLANG_MACOS_ARCH "x86_64")
+        endif()
+    endif()
+
+    set(BE_SLANG_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/slang/macos-${BE_SLANG_MACOS_ARCH}" CACHE PATH "Shader Slang macOS binary root")
+    set(BE_SLANG_LIB_DIR "${BE_SLANG_ROOT}/lib" CACHE INTERNAL "Shader Slang runtime library directory")
+
+    if(NOT EXISTS "${BE_SLANG_ROOT}/include/slang.h" OR NOT EXISTS "${BE_SLANG_LIB_DIR}/libslang-compiler.dylib")
+        message(FATAL_ERROR
+            "Missing Shader Slang macOS binaries at ${BE_SLANG_ROOT}. "
+            "Run ./tools/setup-macos-deps.sh from the repository root.")
+    endif()
+
+    target_include_directories(slang INTERFACE "${BE_SLANG_ROOT}/include")
+    set_target_properties(slang PROPERTIES
+        IMPORTED_LOCATION "${BE_SLANG_LIB_DIR}/libslang-compiler.dylib")
 else()
     set_target_properties(slang PROPERTIES
         IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/slang/linux-x64/lib/libslang-compiler.so")
@@ -78,6 +99,28 @@ target_include_directories(Vulkan::Vulkan INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}
 if(WIN32)
     set_target_properties(Vulkan::Vulkan PROPERTIES
         IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/vulkan-sdk/lib/vulkan-1.lib")
+elseif(APPLE)
+    if(NOT DEFINED BE_HOMEBREW_PREFIX)
+        if(DEFINED ENV{HOMEBREW_PREFIX})
+            set(BE_HOMEBREW_PREFIX "$ENV{HOMEBREW_PREFIX}")
+        elseif(EXISTS "/opt/homebrew")
+            set(BE_HOMEBREW_PREFIX "/opt/homebrew")
+        elseif(EXISTS "/usr/local")
+            set(BE_HOMEBREW_PREFIX "/usr/local")
+        endif()
+    endif()
+    set(BE_HOMEBREW_PREFIX "${BE_HOMEBREW_PREFIX}" CACHE PATH "Homebrew prefix used for Vulkan loader and MoltenVK")
+    set(BE_VULKAN_LIB_DIR "${BE_HOMEBREW_PREFIX}/lib" CACHE INTERNAL "Vulkan runtime library directory")
+    set(BE_MOLTENVK_DYLIB "${BE_VULKAN_LIB_DIR}/libMoltenVK.dylib" CACHE FILEPATH "MoltenVK runtime dylib")
+
+    if(NOT EXISTS "${BE_VULKAN_LIB_DIR}/libvulkan.1.dylib" OR NOT EXISTS "${BE_MOLTENVK_DYLIB}")
+        message(FATAL_ERROR
+            "Missing Homebrew Vulkan loader or MoltenVK under ${BE_HOMEBREW_PREFIX}. "
+            "Install them with: brew install vulkan-loader molten-vk vulkan-headers")
+    endif()
+
+    set_target_properties(Vulkan::Vulkan PROPERTIES
+        IMPORTED_LOCATION "${BE_VULKAN_LIB_DIR}/libvulkan.1.dylib")
 else()
     set_target_properties(Vulkan::Vulkan PROPERTIES
         IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/vulkan-sdk/lib/linux-x64/libvulkan.so.1")

@@ -1,5 +1,6 @@
 #include "BeAssimpImporter.h"
 
+#include <algorithm>
 #include <ranges>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
@@ -149,12 +150,17 @@ auto BeAssimpImporter::LoadTextureFromAssimpPath(
 
 
     if (texPath.C_Str()[0] != '*') {
-        const auto filename = std::filesystem::path(texPath.C_Str()).filename();
+        auto texturePathString = std::string(texPath.C_Str());
+        std::replace(texturePathString.begin(), texturePathString.end(), '\\', '/');
+
+        const auto texturePath = std::filesystem::path(texturePathString);
+        const auto filename = texturePath.filename();
         std::filesystem::path path;
-        if (!std::filesystem::exists(path = parentPath / filename) &&
+        if (!std::filesystem::exists(path = parentPath / texturePath) &&
+            !std::filesystem::exists(path = parentPath / filename) &&
             !std::filesystem::exists(path = parentPath / "textures" / filename) &&
             !std::filesystem::exists(path = parentPath / "images" / filename)) {
-            throw std::runtime_error("Texture file not found: " + filename.string());
+            throw std::runtime_error("Texture file not found: " + texturePathString);
         }
         return builder
             .LoadFromFile(path)

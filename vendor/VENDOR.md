@@ -19,8 +19,8 @@ each tree came from. Keep it accurate or provenance is lost again.
 | LuaBridge3 | 3.0-rc4 | commit `87f36c9688ed7e153380f6cf78675be1be3fde05` | https://github.com/kunitoki/LuaBridge3 | `INTERFACE` target `luabridge3` |
 | nlohmann/json | 3.12.0 | tag `v3.12.0` | https://github.com/nlohmann/json | `INTERFACE` target `nlohmann_json` |
 | stb_image | 2.30 | sha256 `594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3` | https://github.com/nothings/stb | `INTERFACE` target `stb_image` |
-| Slang | 2026.3.1 | prebuilt binaries | https://github.com/shader-slang/slang/releases | `IMPORTED` target `slang` |
-| Vulkan SDK | 1.4.341 | prebuilt loader + headers | https://vulkan.lunarg.com/sdk/home | `IMPORTED` target `Vulkan::Vulkan` |
+| Slang | 2026.3.1 | prebuilt binaries | https://github.com/shader-slang/slang/releases | `IMPORTED` target `slang`. Linux/Windows are committed; macOS binaries are fetched by `tools/setup-macos-deps.sh` into gitignored `vendor/slang/macos-*`. |
+| Vulkan SDK | 1.4.341 | prebuilt loader + headers | https://vulkan.lunarg.com/sdk/home | `IMPORTED` target `Vulkan::Vulkan`. Linux/Windows are vendored; macOS uses Homebrew `vulkan-loader` + `molten-vk`. |
 | VMA | 3.3.0 | bundled inside `vulkan-sdk/include/vma` | https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator | header-only |
 
 ### Transitive — pulled in by cpptrace

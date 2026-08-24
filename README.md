@@ -18,12 +18,20 @@ yo, this is my c++23 graphics engine i built for myself and for you. its a custo
 
 ### building
 
-requires: cmake 3.25+, ninja (linux), vs2022 (windows), vulkan sdk.
+requires: cmake 3.25+, ninja (linux/macos), vs2022 (windows), vulkan sdk (linux/windows). macos uses homebrew vulkan-loader + moltenvk and a mac slang build.
 
 **linux**
 ```bash
 cmake --preset linux-debug          # or linux-release / linux-debug-hotreload
 cmake --build out/linux-debug
+```
+
+**macos**
+```bash
+./tools/setup-macos-deps.sh
+cmake --preset macos-debug          # or macos-release
+cmake --build out/macos-debug
+./out/macos-debug/example-sakura/example-sakura
 ```
 
 **windows**
