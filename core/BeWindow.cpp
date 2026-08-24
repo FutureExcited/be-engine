@@ -23,6 +23,8 @@ BeWindow::BeWindow(int desiredWidth, int desiredHeight, const std::string& title
 
 #ifdef __linux__
     glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
+#elif defined(__APPLE__)
+    glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_COCOA);
 #endif
     if (!glfwInit()) {
         throw std::runtime_error("Failed to initialize GLFW");

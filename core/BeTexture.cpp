@@ -26,7 +26,8 @@ auto BeTexture::Builder::SetCubemap(bool cubemap)        -> Builder&& { _descrip
 auto BeTexture::Builder::SetArrayLength(uint32_t length) -> Builder&& { _descriptor.ArrayLength = length;               return std::move(*this); }
 
 auto BeTexture::Builder::FillWithColor(const glm::vec4& color) -> Builder&& {
-    const auto size = size_t(_descriptor.Width * _descriptor.Height);
+    const auto faceCount = _descriptor.IsCubemap ? size_t(6) : size_t(1);
+    const auto size = size_t(_descriptor.Width * _descriptor.Height) * faceCount * std::max<uint32_t>(_descriptor.ArrayLength, 1);
     const auto data = static_cast<uint8_t*>(malloc(size * 4 * sizeof(uint8_t)));
 
     for (size_t i = 0; i < size; ++i) {

@@ -3,6 +3,7 @@
 #include "BeWindow.h"
 #include "BeInput.h"
 #include "BePass.h"
+#include "BePlatform.h"
 #include "sen-rhi/SenBackend.h"
 #include "sen-rhi/SenShaderCompiler.h"
 
@@ -16,7 +17,8 @@ int main() {
     // static -> dynamic
     // semantic / location
     // render target formats
-    
+    BePlatform::MoveWorkingDirectoryToExecutableDir();
+
     auto window = std::make_shared<BeWindow>(800, 600, "be: hello triangle", BeWindowMode::Windowed);
 
     SenBackend::Init({ .DebugLayer = false });

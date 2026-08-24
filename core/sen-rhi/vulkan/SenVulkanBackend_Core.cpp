@@ -6,6 +6,7 @@
 
 #define VMA_IMPLEMENTATION
 #include <ranges>
+#include <vector>
 #include <vma/vk_mem_alloc.h>
 
 #include <umbrellas/include-libassert.h>
@@ -53,9 +54,17 @@ auto SenVulkanBackend::Init(const SenDeviceDesc& desc) -> void {
     std::vector<const char*> instanceLayers;
     const void* instancePNext = SenVulkanValidation::ConfigureForInstance(instanceLayers, instanceExtensions);
 
+    VkInstanceCreateFlags instanceCreateFlags = 0;
+#ifdef __APPLE__
+    // MoltenVK is a portability driver: the loader hides it unless we opt in.
+    instanceExtensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+    instanceCreateFlags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+#endif
+
     VkInstanceCreateInfo createInfo {
         .sType                   = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
         .pNext                   = instancePNext,
+        .flags                   = instanceCreateFlags,
         .pApplicationInfo        = &appInfo,
         .enabledLayerCount       = uint32_t(instanceLayers.size()),
         .ppEnabledLayerNames     = instanceLayers.data(),
@@ -125,9 +134,13 @@ auto SenVulkanBackend::Init(const SenDeviceDesc& desc) -> void {
     };
 
     // logical device
-    const char* deviceExtensions[] = {
+    std::vector<const char*> deviceExtensions = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,  // swapchain is never core; dynamic rendering + sync2 are core in 1.3
     };
+#ifdef __APPLE__
+    // Mandatory on portability (MoltenVK) physical devices.
+    deviceExtensions.push_back("VK_KHR_portability_subset");
+#endif
 
     // 1.0 features
     VkPhysicalDeviceFeatures enabled10Features {
@@ -159,8 +172,8 @@ auto SenVulkanBackend::Init(const SenDeviceDesc& desc) -> void {
         .pNext                   = &enabled13Features,
         .queueCreateInfoCount    = 1,
         .pQueueCreateInfos       = &queueCreateInfo,
-        .enabledExtensionCount   = uint32_t(std::size(deviceExtensions)),
-        .ppEnabledExtensionNames = deviceExtensions,
+        .enabledExtensionCount   = uint32_t(deviceExtensions.size()),
+        .ppEnabledExtensionNames = deviceExtensions.data(),
         .pEnabledFeatures        = &enabled10Features,
     };
 

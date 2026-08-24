@@ -28,7 +28,13 @@ auto Game::Run() -> int {
     Width = 800;
     Height = 600;
     
-    Window = std::make_shared<BeWindow>(Width, Height, "be: example sakura", BeWindowMode::Fullscreen);
+#ifdef __APPLE__
+    // Exclusive fullscreen on macOS fights the compositor; windowed is the usable first launch.
+    const auto windowMode = BeWindowMode::Windowed;
+#else
+    const auto windowMode = BeWindowMode::Fullscreen;
+#endif
+    Window = std::make_shared<BeWindow>(Width, Height, "be: example sakura", windowMode);
     Renderer = std::make_shared<BeRenderer>(Window->GetReportedPixelWidth(), Window->GetReportedPixelHeight(), static_cast<void*>(Window->GetGlfwWindow()));
     //Renderer->LaunchDevice(SenPresentMode::Immediate);
     Renderer->LaunchDevice(SenPresentMode::VSync);

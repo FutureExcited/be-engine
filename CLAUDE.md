@@ -4,12 +4,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build Commands
 
-**Linux (active platform)** — uses CMake with Ninja (requires CMake 3.25+):
+**Linux** — uses CMake with Ninja (requires CMake 3.25+):
 ```bash
 # Configure
 cmake --preset linux-debug    # or linux-release, or linux-debug-hotreload
 # Build
 cmake --build out/linux-debug
+```
+
+**macOS** — Vulkan via MoltenVK. Homebrew vulkan-loader + molten-vk, plus vendored Slang macOS binaries:
+```bash
+./tools/setup-macos-deps.sh
+cmake --preset macos-debug    # or macos-release
+cmake --build out/macos-debug
 ```
 
 **Windows** — uses CMake with Visual Studio 2022 or premake5:

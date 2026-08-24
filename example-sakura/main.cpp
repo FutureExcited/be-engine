@@ -1,6 +1,8 @@
 #include "Game.h"
+#include "BePlatform.h"
 
 int main() {
+    BePlatform::MoveWorkingDirectoryToExecutableDir();
 
     const auto game = new Game();
     const auto result = game->Run();

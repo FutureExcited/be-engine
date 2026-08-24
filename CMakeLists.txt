@@ -41,6 +41,18 @@ function(be_copy_runtime_deps target)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${CMAKE_SOURCE_DIR}/vendor/slang/bin/slang-compiler.dll"
                 "$<TARGET_FILE_DIR:${target}>")
+    elseif(APPLE)
+        set_target_properties(${target} PROPERTIES
+            BUILD_RPATH  "@executable_path;${BE_VULKAN_LIB_DIR}"
+            INSTALL_RPATH "@executable_path;${BE_VULKAN_LIB_DIR}")
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND bash -c "cp -P '${BE_SLANG_LIB_DIR}/'*.dylib '$<TARGET_FILE_DIR:${target}>'"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${BE_MOLTENVK_DYLIB}"
+                "$<TARGET_FILE_DIR:${target}>"
+            COMMAND /usr/bin/install_name_tool -delete_rpath
+                "${BE_SLANG_LIB_DIR}"
+                "$<TARGET_FILE:${target}>")
     else()
         set_target_properties(${target} PROPERTIES
             BUILD_RPATH  "$ORIGIN"
@@ -53,7 +65,8 @@ function(be_copy_runtime_deps target)
     endif()
 
     # Validation layer travels next to the exe (debug only); Init() points VK_ADD_LAYER_PATH here.
-    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    # macOS gets its validation layers from Homebrew, not the vendored Win/Linux SDK.
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND NOT APPLE)
         add_custom_command(TARGET ${target} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${CMAKE_SOURCE_DIR}/vendor/vulkan-sdk/share/vulkan/explicit_layer.d/$<IF:$<PLATFORM_ID:Windows>,windows,linux>"

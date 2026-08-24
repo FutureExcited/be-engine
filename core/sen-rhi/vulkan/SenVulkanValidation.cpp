@@ -8,6 +8,9 @@
   #include <windows.h>
 #elif defined(__linux__)
   #include <unistd.h>
+#elif defined(__APPLE__)
+  #include <limits.h>
+  #include <mach-o/dyld.h>
 #endif
 
 #include <umbrellas/include-libassert.h>
@@ -70,6 +73,15 @@ auto SenVulkanValidation::ExecutableDir() -> std::string {
         ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf));
         if (n <= 0) { return "."; }
         std::string path(buf, size_t(n));
+        const auto slash = path.find_last_of('/');
+        return slash == std::string::npos ? "." : path.substr(0, slash);
+    }
+    #elif defined(__APPLE__)
+    {
+        char buf[PATH_MAX];
+        uint32_t size = sizeof(buf);
+        if (_NSGetExecutablePath(buf, &size) != 0) { return "."; }
+        std::string path(buf);
         const auto slash = path.find_last_of('/');
         return slash == std::string::npos ? "." : path.substr(0, slash);
     }
