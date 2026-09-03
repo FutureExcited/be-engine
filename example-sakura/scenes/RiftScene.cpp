@@ -2,21 +2,28 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <random>
 #include <string>
 #include <vector>
 
 #include <umbrellas/include-glfw.h>
 #include <umbrellas/include-glm.h>
+#include <umbrellas/include-libassert.h>
 
 #include "BeMesh.h"
 
 #include "ShipCameraController.h"
 #include "DeliverySystem.h"
+#include "MetaSystem.h"
+#include "StationUI.h"
+#include "RiftSettings.h"
 #include "RiftTerrain.h"
 #include "BeCamera.h"
-
+#include "imgui/BeImGuiPass.h"
+#include "imgui/imgui.h"
 #include "BeInput.h"
+#include "BeWindow.h"
 #include "BeMaterial.h"
 #include "BeMeshPrimitives.h"
 #include "BeProp.h"
@@ -29,47 +36,101 @@
 #include "BeShader.h"
 #include "standard-render-machine/BeStandardRenderMachine.h"
 
-RiftScene::RiftScene(Game* game) : FullScene(game) {}
-RiftScene::~RiftScene() = default;
+RiftScene::RiftScene(Game* game) : FullScene(game) {
+    RiftStore::Bootstrap();
+    RiftStore::Get().Seed = std::random_device{}();
+}
+
+RiftScene::~RiftScene() {
+    RiftStore::Shutdown();
+}
 
 void RiftScene::Prepare() {
     FullScene::Prepare();
 
-    _camera->Position = glm::vec3(0.0f, Settings.Camera.SpawnHeight, 0.0f);
+    _camera->Position = glm::vec3(0.0f, RiftStore::Get().Camera.SpawnHeight, 0.0f);
 
-    _shipCameraController = std::make_unique<ShipCameraController>(_camera.get());
-    _hudMaterial->SetFloat1("AimRadius", _shipCameraController->AimRadius);
-    _ammo = Settings.Combat.StartingAmmo;
-    _ammoMax = Settings.Combat.StartingAmmo;
+    _shipCameraController = std::make_unique<ShipCameraController>(_camera.get(), _terrain.get());
+    _hudMaterial->SetFloat1("AimRadius", RiftStore::Get().Ship.AimRadius);
+
+    _ammo = RiftStore::Get().Combat.StartingAmmo;
+    _ammoMax = RiftStore::Get().Combat.StartingAmmo;
     ApplyLoadout();
-    SpawnAliens();
-    EnterPlayMode();
 }
 
 auto RiftScene::EnterPlayMode() -> void {
-    auto deliveryConfig = Settings.Delivery.Config;
-    deliveryConfig.TerrainSize = Settings.Terrain.Size;
-    deliveryConfig.TerrainSpikeAmplitude = Settings.Terrain.SpikeAmplitude;
-    deliveryConfig.Seed = std::random_device{}();
-    _delivery = std::make_unique<DeliverySystem>(_registry, _assetRegistry, deliveryConfig);
+    _delivery = std::make_unique<DeliverySystem>(_registry, _assetRegistry, *_terrain);
     _delivery->GenerateStations();
-    _delivery->Begin(_camera->Position);
+    _meta.Begin();
+
+    _kills = 0;
+    _ammo = _ammoMax;
+    SpawnAliens();
+}
+
+auto RiftScene::SetStationUiOpen(bool open) -> void {
+    _stationUiOpen = open;
 }
 
 auto RiftScene::ExitPlayMode() -> void {
     const auto stations = _registry.view<StationComponent>();
     _registry.destroy(stations.begin(), stations.end());
+    const auto docks = _registry.view<DockComponent>();
+    _registry.destroy(docks.begin(), docks.end());
+    ClearCombatEntities();
+    _shipCameraController->Uncapture();
+    SetStationUiOpen(false);
+    _shopOpen = false;
+    _boostLeft = 0.0f;
     _delivery.reset();
+    _meta.End();
     _hudMaterial->SetFloat1("TargetState", 0.0f);
 }
 
+auto RiftScene::StartDeath() -> void {
+    if (_dying || !_delivery) return;
+    SpawnBurst(_camera->Position, glm::vec3(1.0f, 0.45f, 0.08f), 28, 22.0f);
+    _coroutineScheduler.Start(DeathSequence());
+}
+
+auto RiftScene::DeathSequence() -> BeCoroutine {
+    const auto& ship = RiftStore::Get().Ship;
+    _dying = true;
+
+    const float fadeOutStart = _time;
+    while (_time - fadeOutStart < ship.DeathFadeOutTime) {
+        _posterizeMaterial->SetFloat1("Fade", (_time - fadeOutStart) / ship.DeathFadeOutTime);
+        co_yield 0.0f;
+    }
+    _posterizeMaterial->SetFloat1("Fade", 1.0f);
+
+    _delivery->ApplyCrashPenalty();
+    _shipCameraController->Respawn(_delivery->GetRespawnDock(_camera->Position));
+    _ammo = _ammoMax;
+    _boostLeft = 0.0f;
+    _shopOpen = false;
+
+    co_yield ship.DeathHoldTime;
+
+    const float fadeInStart = _time;
+    while (_time - fadeInStart < ship.DeathFadeInTime) {
+        _posterizeMaterial->SetFloat1("Fade", 1.0f - (_time - fadeInStart) / ship.DeathFadeInTime);
+        co_yield 0.0f;
+    }
+    _posterizeMaterial->SetFloat1("Fade", 0.0f);
+
+    _dying = false;
+}
+
 auto RiftScene::DefineSettings() -> void {
-    _camera->NearPlane = Settings.Camera.NearPlane;
-    _camera->FarPlane = Settings.Camera.FarPlane;
-    _machine->UniformMaterial->SetFloat3("AmbientColor", Settings.Ambient.Color);
+    const auto& settings = RiftStore::Get();
+    _camera->NearPlane = settings.Camera.NearPlane;
+    _camera->FarPlane = settings.Camera.FarPlane;
+    _machine->UniformMaterial->SetFloat3("AmbientColor", settings.Ambient.Color);
 }
 
 auto RiftScene::DefineAssets() -> void {
+    const auto& settings = RiftStore::Get();
     auto phongShader = BeShaderLibrary::GetShader("standard-phong");
 
     auto box = BeProp::FromMesh(BeMeshPrimitives::Cube(), phongShader, "geometry-main");
@@ -77,6 +138,7 @@ auto RiftScene::DefineAssets() -> void {
     _assetRegistry.AddProp("box", box);
     _machine->RegisterMesh(box->Mesh);
 
+    // combat props: alien hunter, tracer, debris, flash
     auto hunterMesh = std::make_shared<BeMesh>();
     auto pushBox = [&](glm::vec3 c, glm::vec3 e) {
         const glm::vec3 p[8] = {
@@ -136,22 +198,42 @@ auto RiftScene::DefineAssets() -> void {
     _assetRegistry.AddProp("flash", flash);
     _machine->RegisterMesh(flash->Mesh);
 
-    auto floor = BeProp::FromMesh(
-        RiftTerrain::BuildMesh(Settings.Terrain.Size, Settings.Terrain.Cells, Settings.Terrain.SpikeAmplitude),
-        phongShader, "geometry-main"
-    );
-    floor->Materials[0]->SetFloat3("DiffuseColor", Settings.Terrain.Color);
+    _terrain = std::make_unique<RiftTerrain>();
+
+    const auto packedHeights = _terrain->CopyPackedHeights();
+    const auto resolution = static_cast<uint32_t>(_terrain->GetResolution());
+    auto heightMap = BeTexture::Create("rift-heightmap")
+        .SetSize(resolution, resolution)
+        .SetFormat(SenFormat::R32_Float)
+        .SetUsage(SenTextureUsage::ShaderResource)
+        .FillFromMemory(reinterpret_cast<const uint8_t*>(packedHeights.data()))
+        .Build();
+
+    auto terrainShader = BeShaderLibrary::GetShader("rift-terrain");
+    be_assert(settings.Terrain.GridVerticesPerRenderTile % 2 == 1, "vertices per render tile must be odd so tile vertices land on integer logical coords");
+    auto floor = BeProp::FromMesh(BeMeshPrimitives::Plane(settings.Terrain.GridVerticesPerRenderTile - 1), terrainShader, "geometry-main");
+    floor->Materials[0]->SetFloat3("DiffuseColor", settings.Terrain.Color);
+    floor->Materials[0]->SetTexture("HeightMap", heightMap);
+    floor->Materials[0]->SetSampler("HeightSampler", BeShaderLibrary::GetSampler("point-wrap"));
+    floor->Materials[0]->SetFloat1("MapSize", settings.Terrain.LogicalMapWorldSize);
+    floor->Materials[0]->SetFloat1("MapResolution", static_cast<float>(resolution));
+    floor->Materials[0]->SetFloat1("HeightScale", 1.0f);
     _assetRegistry.AddProp("floor", floor);
     _machine->RegisterMesh(floor->Mesh);
 
     auto stationShader = BeShaderLibrary::GetShader("station");
-    for (const auto& kind : Settings.Delivery.Config.StationKinds) {
+    for (const auto& kind : settings.Delivery.Kinds) {
         auto prop = _machine->LoadProp(kind.Path, stationShader, BeSRMLightingModel::Phong);
         for (const auto& material : prop->Materials) {
             material->SetFloat1("EmissiveMix", kind.EmissiveMix);
         }
         _assetRegistry.AddProp(kind.Prop, prop);
     }
+
+    auto ringShader = BeShaderLibrary::GetShader("dock-ring");
+    auto ring = BeProp::FromMesh(BeMeshPrimitives::Plane(), ringShader, "geometry-main");
+    _assetRegistry.AddProp("dock-ring", ring);
+    _machine->RegisterMesh(ring->Mesh);
 
     _machine->BakeMeshes();
 
@@ -179,25 +261,27 @@ auto RiftScene::DefineScene() -> void {
         ,RenderComponent { .Prop = _assetRegistry.GetProp("box").lock(), .CastShadows = true }
     );
 
+    const float tileSize = RiftStore::Get().Terrain.GetRenderTileWorldSize();
     for (int tile = 0; tile < 9; ++tile) {
         _terrainTiles[tile] = CreateEntity(_registry
             ,NameComponent { .Name = "terrain-" + std::to_string(tile) }
-            ,TransformComponent { }
-            ,RenderComponent { .Prop = _assetRegistry.GetProp("floor").lock(), .CastShadows = true }
+            ,TransformComponent { .Scale = { tileSize, 1.0f, tileSize } }
+            ,RenderComponent { .Prop = _assetRegistry.GetProp("floor").lock(), .CastShadows = false }
         );
     }
 
+    const auto& sun = RiftStore::Get().Sun;
     CreateEntity(_registry
         ,NameComponent { .Name = "Sun" }
         ,SunLightComponent {
-            .Direction = Settings.Sun.Direction,
-            .Color = Settings.Sun.Color,
-            .Power = Settings.Sun.Power,
+            .Direction = sun.Direction,
+            .Color = sun.Color,
+            .Power = sun.Power,
             .CastsShadows = false,
-            .ShadowCameraDistance = Settings.Sun.ShadowCameraDistance,
-            .ShadowMapWorldSize = Settings.Sun.ShadowMapWorldSize,
-            .ShadowNearPlane = Settings.Sun.ShadowNearPlane,
-            .ShadowFarPlane = Settings.Sun.ShadowFarPlane,
+            .ShadowCameraDistance = sun.ShadowCameraDistance,
+            .ShadowMapWorldSize = sun.ShadowMapWorldSize,
+            .ShadowNearPlane = sun.ShadowNearPlane,
+            .ShadowFarPlane = sun.ShadowFarPlane,
         }
     );
 }
@@ -208,18 +292,19 @@ auto RiftScene::DefinePasses() -> void {
     _machine->AddGeometryPass();
     _machine->AddLightingPass("Rift_HDR");
 
+    const auto& posterize = RiftStore::Get().Posterize;
     const auto& posterizeScheme = BeShaderLibrary::GetShader("posterize")->GetMaterialScheme("main");
     _posterizeMaterial = BeMaterial::Create(posterizeScheme);
     _posterizeMaterial->SetTexture("ColorTexture", _machine->GetRenderTexture("Rift_HDR"));
     _posterizeMaterial->SetTexture("DepthTexture", _machine->GetRenderTexture("Rift_Depth"));
-    _posterizeMaterial->SetFloat1("PixelSize", Settings.Posterize.PixelSize);
-    _posterizeMaterial->SetFloat1("DitherSpread", Settings.Posterize.DitherSpread);
-    _posterizeMaterial->SetFloat1("FogStart", Settings.Posterize.FogStart);
-    _posterizeMaterial->SetFloat1("FogEnd", Settings.Posterize.FogEnd);
-    _posterizeMaterial->SetFloat3("FogColor", Settings.Posterize.FogColor);
-    _posterizeMaterial->SetFloat3Array("Palette", Settings.Posterize.Palette);
-    _posterizeMaterial->SetFloat1("PaletteCount", static_cast<float>(Settings.Posterize.Palette.size()));
-    _posterizeMaterial->SetFloat1("Enabled", Settings.Posterize.Enabled ? 1.0f : 0.0f);
+    _posterizeMaterial->SetFloat1("PixelSize", posterize.PixelSize);
+    _posterizeMaterial->SetFloat1("DitherSpread", posterize.DitherSpread);
+    _posterizeMaterial->SetFloat1("FogStart", posterize.FogStart);
+    _posterizeMaterial->SetFloat1("FogEnd", posterize.FogEnd);
+    _posterizeMaterial->SetFloat3("FogColor", posterize.FogColor);
+    _posterizeMaterial->SetFloat3Array("Palette", posterize.Palette);
+    _posterizeMaterial->SetFloat1("PaletteCount", static_cast<float>(posterize.Palette.size()));
+    _posterizeMaterial->SetFloat1("Enabled", posterize.Enabled ? 1.0f : 0.0f);
     _posterizeMaterial->SetFloat1("Glow", 0.0f);
     _posterizeMaterial->SetFloat3("GlowColor", glm::vec3(1.0f, 0.76f, 0.29f));
     _posterizeMaterial->SetTexture("UITexture", _machine->GetRenderTexture("Rift_UI"));
@@ -229,7 +314,7 @@ auto RiftScene::DefinePasses() -> void {
     const auto& hudScheme = BeShaderLibrary::GetShader("ship-hud")->GetMaterialScheme("main");
     _hudMaterial = BeMaterial::Create(hudScheme);
     _hudMaterial->SetFloat2("ScreenSize", { static_cast<float>(screenWidth), static_cast<float>(screenHeight) });
-    _hudMaterial->SetFloat1("PixelSize", Settings.Posterize.PixelSize);
+    _hudMaterial->SetFloat1("PixelSize", posterize.PixelSize);
     _hudMaterial->SetFloat1("LineHalf", 0.6f);
     _hudMaterial->SetFloat1("PipHalf", 1.0f);
     _machine->AddFullscreenPass(BeShaderLibrary::GetShader("ship-hud"), _hudMaterial, { "Rift_UI" });
@@ -237,7 +322,25 @@ auto RiftScene::DefinePasses() -> void {
     _machine->AddFullscreenPass(BeShaderLibrary::GetShader("posterize"), _posterizeMaterial, { "Rift_Post" });
 
     _machine->AddBackbufferPass("Rift_Post");
+
+    auto imguiPass = std::make_unique<BeImGuiPass>(_gameIns->Window);
+    imguiPass->SetUICallback([this]() {
+        ImGui::PushFont(_riftFont);
+        ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImGui::GetStyle().Colors[ImGuiCol_TitleBg]);
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(1.0f, 1.0f, 1.0f, 0.12f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1.0f, 1.0f, 1.0f, 0.22f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(1.0f, 1.0f, 1.0f, 0.35f));
+        if (_delivery) _meta.DrawUI(*_delivery);
+        if (_showDebug) _shipCameraController->DrawDebugUI();
+        if (_stationUiOpen && _delivery) StationUI::Draw(*_delivery, _camera->Position);
+        ImGui::PopStyleColor(4);
+        ImGui::PopFont();
+    });
+    _machine->AddPass(std::move(imguiPass));
+
     _machine->InitialisePasses();
+
+    _riftFont = ImGui::GetIO().Fonts->AddFontFromFileTTF("assets/rift/b612-mono/B612Mono-Regular.ttf", 20.0f);
 }
 
 void RiftScene::Tick(float deltaTime) {
@@ -251,53 +354,52 @@ void RiftScene::Tick(float deltaTime) {
         }
     }
 
-    if (_gameIns->Input->GetKeyDown(GLFW_KEY_TAB) && !_dead) {
-        _shopOpen = !_shopOpen;
-    }
-    if (_shopOpen && !_dead) {
-        if (_gameIns->Input->GetKeyDown(GLFW_KEY_1)) TryBuy(_speedLevel, Settings.Gig.SpeedCost);
-        if (_gameIns->Input->GetKeyDown(GLFW_KEY_2)) TryBuy(_gunLevel, Settings.Gig.GunCost);
-        if (_gameIns->Input->GetKeyDown(GLFW_KEY_3)) TryBuy(_styleLevel, Settings.Gig.StyleCost);
-        ApplyLoadout();
-    }
-
-    if (_dead && _gameIns->Input->GetKeyDown(GLFW_KEY_R)) {
-        RestartRun();
-    }
-
     if (_gameIns->Input->GetKeyDown(GLFW_KEY_ENTER)) {
-        Settings.Posterize.Enabled = !Settings.Posterize.Enabled;
-        _posterizeMaterial->SetFloat1("Enabled", Settings.Posterize.Enabled ? 1.0f : 0.0f);
+        bool& enabled = RiftStore::Get().Posterize.Enabled;
+        enabled = !enabled;
+        _posterizeMaterial->SetFloat1("Enabled", enabled ? 1.0f : 0.0f);
     }
 
-    if (_gameIns->Input->GetKeyDown(GLFW_KEY_P)) {
+    if (_gameIns->Input->GetKeyDown(GLFW_KEY_P) && !_dying) {
         if (_delivery) ExitPlayMode();
         else EnterPlayMode();
     }
 
-    if (_gameIns->Input->GetKeyDown(GLFW_KEY_T) && _delivery) {
-        _delivery->TargetNearest(_camera->Position);
+    if (_gameIns->Input->GetKeyDown(GLFW_KEY_F1)) _showDebug = !_showDebug;
+
+    const bool cheatMod = _gameIns->Input->GetKey(GLFW_KEY_LEFT_CONTROL) && _gameIns->Input->GetKey(GLFW_KEY_LEFT_ALT);
+    if (cheatMod && _delivery) {
+        if (_gameIns->Input->GetKeyDown(GLFW_KEY_EQUAL)) _delivery->SetCredits(_delivery->GetCredits() + 1000);
+        if (_gameIns->Input->GetKeyDown(GLFW_KEY_MINUS)) _delivery->SetCredits(_delivery->GetCredits() - 1000);
+        if (_gameIns->Input->GetKeyDown(GLFW_KEY_LEFT_BRACKET)) _meta.SetElapsed(_meta.GetElapsed() - 30.0f);
+        if (_gameIns->Input->GetKeyDown(GLFW_KEY_RIGHT_BRACKET)) _meta.SetElapsed(_meta.GetElapsed() + 30.0f);
     }
 
-    if (_shopOpen) {
-        _gameIns->Input->SetMouseCapture(false);
-    } else {
-        _shipCameraController->Update(deltaTime, _gameIns->Input.get());
-        TickCombat(deltaTime);
-        TickGigs(deltaTime);
+    if (_delivery) {
+        _meta.Update(deltaTime, *_delivery);
+        if (_meta.WantsClose()) {
+            _gameIns->Window->RequestClose();
+            return;
+        }
     }
+
+    // shop: Tab toggles, 1/2 buy upgrades with delivery credits
+    if (_delivery && !_dying && !_meta.IsPaused() && !_stationUiOpen && _gameIns->Input->GetKeyDown(GLFW_KEY_TAB)) {
+        _shopOpen = !_shopOpen;
+    }
+    if (!_delivery) _shopOpen = false;
+    if (_shopOpen) {
+        const auto& shop = RiftStore::Get().Shop;
+        if (_gameIns->Input->GetKeyDown(GLFW_KEY_1)) TryBuy(_speedLevel, shop.SpeedCost);
+        if (_gameIns->Input->GetKeyDown(GLFW_KEY_2)) TryBuy(_gunLevel, shop.GunCost);
+    }
+
+    const bool uiOpen = _meta.IsPaused() || _stationUiOpen || _shopOpen;
+    _shipCameraController->SetControlsEnabled(!uiOpen && !_dying);
+    _gameIns->Input->SetMouseCapture(!uiOpen);
+
+    _shipCameraController->Update(deltaTime, _gameIns->Input.get());
     _hudMaterial->SetFloat2("AimOffset", _shipCameraController->GetAim());
-    _hudMaterial->SetFloat1("GameOver", _dead ? std::max(_gameOverTime, 0.2f) : 0.0f);
-    _hudMaterial->SetFloat1("Kills", static_cast<float>(_kills));
-    _hudMaterial->SetFloat1("Ammo", static_cast<float>(_ammo));
-    _hudMaterial->SetFloat1("AmmoMax", static_cast<float>(_ammoMax));
-    _hudMaterial->SetFloat1("Credits", static_cast<float>(_credits));
-    _hudMaterial->SetFloat1("Boost", _boostLeft / Settings.Gig.BoostSeconds);
-    _hudMaterial->SetFloat1("Shop", _shopOpen ? 1.0f : 0.0f);
-    _hudMaterial->SetFloat1("SpeedLvl", static_cast<float>(_speedLevel));
-    _hudMaterial->SetFloat1("GunLvl", static_cast<float>(_gunLevel));
-    _hudMaterial->SetFloat1("StyleLvl", static_cast<float>(_styleLevel));
-    _hudMaterial->SetFloat1("PayFlash", _toastLeft);
 
     const glm::vec3 worldUp = { 0.0f, 1.0f, 0.0f };
     const glm::vec2 upScreen = { glm::dot(worldUp, _camera->GetRight()), glm::dot(worldUp, _camera->GetUp()) };
@@ -306,21 +408,59 @@ void RiftScene::Tick(float deltaTime) {
     horizonDir = horizonLen > 1e-3f ? horizonDir / horizonLen : glm::vec2(1.0f, 0.0f);
     _hudMaterial->SetFloat2("HorizonDir", { horizonDir.x, -horizonDir.y });
 
-    if (_delivery && _delivery->Update(_camera->Position)) {
-        SettleDelivery(glm::length(_shipCameraController->GetVelocity()));
+    if (_delivery && !_dying) {
+        if (_shipCameraController->GetLastImpactSpeed() > RiftStore::Get().Ship.CrashImpactSpeed) {
+            StartDeath();
+        }
+    }
+
+    TickCombat(deltaTime, !uiOpen && !_dying);
+    TickShop(deltaTime);
+
+    _hudMaterial->SetFloat1("GameOver", 0.0f);
+    _hudMaterial->SetFloat1("Kills", static_cast<float>(_kills));
+    _hudMaterial->SetFloat1("Ammo", static_cast<float>(_ammo));
+    _hudMaterial->SetFloat1("AmmoMax", static_cast<float>(_ammoMax));
+    _hudMaterial->SetFloat1("Credits", _delivery ? static_cast<float>(_delivery->GetCredits()) / 100.0f : 0.0f);
+    _hudMaterial->SetFloat1("Boost", _boostLeft / RiftStore::Get().Shop.BoostSeconds);
+    _hudMaterial->SetFloat1("Shop", _shopOpen ? 1.0f : 0.0f);
+    _hudMaterial->SetFloat1("SpeedLvl", static_cast<float>(_speedLevel));
+    _hudMaterial->SetFloat1("GunLvl", static_cast<float>(_gunLevel));
+    _hudMaterial->SetFloat1("PayFlash", _toastLeft);
+
+    if (_delivery && !_dying) {
+        const auto dock = _delivery->CheckDock(_camera->Position);
+        _shipCameraController->SetInDock(dock.Hit);
+
+        if (_shipCameraController->HasJustEnteredDock()) {
+            _shipCameraController->Capture(dock.Anchor);
+            _delivery->NotifyDocked(dock);
+        }
+
+        if (_shipCameraController->IsCaptured() && _gameIns->Input->GetKeyDown(GLFW_KEY_S)) {
+            SetStationUiOpen(!_stationUiOpen);
+        }
+
+        if (_gameIns->Input->GetKeyDown(GLFW_KEY_C)) {
+            _shipCameraController->Uncapture();
+            _delivery->NotifyUndocked();
+            SetStationUiOpen(false);
+        }
     }
 
     const float screenW = static_cast<float>(_gameIns->Renderer->GetSwapchainPixelWidth());
     const float screenH = static_cast<float>(_gameIns->Renderer->GetSwapchainPixelHeight());
-    const auto& marker = Settings.Delivery.Marker;
+    _hudMaterial->SetFloat2("ScreenSize", { screenW, screenH });
+    const auto& marker = RiftStore::Get().Delivery.Marker;
     float targetState = 0.0f;
     glm::vec2 targetPixel = { screenW * 0.5f, screenH * 0.5f };
     glm::vec2 targetDir = { 0.0f, 1.0f };
     float targetRadius = marker.MinRadius;
     float targetAlpha = 1.0f;
-    if (_delivery && _delivery->HasTarget()) {
+    if (_delivery && _delivery->HasContract() && !_delivery->CanComplete()) {
+        const glm::vec3 targetWorld = _delivery->GetTargetPosition(_camera->Position);
         const glm::vec4 clip = _camera->GetProjectionMatrix() * _camera->GetViewMatrix()
-            * glm::vec4(_delivery->TargetPosition(), 1.0f);
+            * glm::vec4(targetWorld, 1.0f);
         const bool behind = clip.w <= 1e-4f;
         glm::vec2 ndc = glm::vec2(clip.x, clip.y) / clip.w;
         if (behind) ndc = -ndc;
@@ -328,7 +468,7 @@ void RiftScene::Tick(float deltaTime) {
         if (onScreen) {
             targetState = 1.0f;
             targetPixel = { (ndc.x * 0.5f + 0.5f) * screenW, (0.5f - ndc.y * 0.5f) * screenH };
-            const float distance = glm::length(_delivery->TargetPosition() - _camera->Position);
+            const float distance = glm::length(targetWorld - _camera->Position);
             targetRadius = glm::mix(marker.MinRadius, marker.MaxRadius, glm::smoothstep(marker.SizeFar, marker.SizeNear, distance));
             targetAlpha = glm::smoothstep(marker.FadeNear, marker.FadeFar, distance);
         } else {
@@ -345,7 +485,7 @@ void RiftScene::Tick(float deltaTime) {
     _hudMaterial->SetFloat1("TargetRingRadius", targetRadius);
     _hudMaterial->SetFloat1("TargetAlpha", targetAlpha);
 
-    const float tileSize = Settings.Terrain.Size;
+    const float tileSize = RiftStore::Get().Terrain.GetRenderTileWorldSize();
     const int centerX = static_cast<int>(std::round(_camera->Position.x / tileSize));
     const int centerZ = static_cast<int>(std::round(_camera->Position.z / tileSize));
     int tileIndex = 0;
@@ -359,6 +499,8 @@ void RiftScene::Tick(float deltaTime) {
     FullScene::Tick(deltaTime);
 }
 
+// combat ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 auto RiftScene::RandomRange(float lo, float hi) -> float {
     std::uniform_real_distribution<float> dist(lo, hi);
     return dist(_combatRng);
@@ -366,21 +508,18 @@ auto RiftScene::RandomRange(float lo, float hi) -> float {
 
 auto RiftScene::SpawnAlienAround(glm::vec3 origin) -> void {
     auto prop = _assetRegistry.GetProp("alien").lock();
-    if (!prop) return;
+    if (!prop || !_terrain) return;
+    const auto& combat = RiftStore::Get().Combat;
 
-    glm::vec3 position = origin;
+    glm::vec3 position = origin + glm::vec3(0.0f, 0.0f, combat.AlienSpawnFar);
     for (int attempt = 0; attempt < 24; ++attempt) {
         const float angle = RandomRange(0.0f, glm::two_pi<float>());
-        const float radius = Settings.Combat.AlienSpawnFar * std::sqrt(RandomRange(0.0f, 1.0f));
-        const float x = radius * std::cos(angle);
-        const float z = radius * std::sin(angle);
-        const float ground = RiftTerrain::SampleHeight(x, z, Settings.Terrain.Size, Settings.Terrain.SpikeAmplitude);
-        const glm::vec3 candidate{
-            x,
-            ground + Settings.Combat.AlienMinAltitude + RandomRange(0.0f, 80.0f),
-            z
-        };
-        if (glm::length(candidate - origin) >= Settings.Combat.AlienSpawnNear) {
+        const float radius = combat.AlienSpawnFar * std::sqrt(RandomRange(0.0f, 1.0f));
+        const float x = origin.x + radius * std::cos(angle);
+        const float z = origin.z + radius * std::sin(angle);
+        const float ground = _terrain->GetHeight(x, z);
+        const glm::vec3 candidate{ x, ground + combat.AlienMinAltitude + RandomRange(0.0f, 80.0f), z };
+        if (glm::length(candidate - origin) >= combat.AlienSpawnNear) {
             position = candidate;
             break;
         }
@@ -397,8 +536,8 @@ auto RiftScene::SpawnAlienAround(glm::vec3 origin) -> void {
         }
         ,RenderComponent { .Prop = prop, .CastShadows = false }
         ,AlienComponent {
-            .HitRadius = Settings.Combat.AlienHitRadius,
-            .Speed = RandomRange(Settings.Combat.AlienMinSpeed, Settings.Combat.AlienMaxSpeed),
+            .HitRadius = combat.AlienHitRadius,
+            .Speed = RandomRange(combat.AlienMinSpeed, combat.AlienMaxSpeed),
             .Wobble = RandomRange(0.0f, glm::two_pi<float>()),
         }
     );
@@ -407,9 +546,18 @@ auto RiftScene::SpawnAlienAround(glm::vec3 origin) -> void {
 auto RiftScene::SpawnAliens() -> void {
     const auto aliens = _registry.view<AlienComponent>();
     _registry.destroy(aliens.begin(), aliens.end());
-    for (int i = 0; i < Settings.Combat.AlienCount; ++i) {
+    for (int i = 0; i < RiftStore::Get().Combat.AlienCount; ++i) {
         SpawnAlienAround(_camera->Position);
     }
+}
+
+auto RiftScene::ClearCombatEntities() -> void {
+    const auto aliens = _registry.view<AlienComponent>();
+    _registry.destroy(aliens.begin(), aliens.end());
+    const auto tracers = _registry.view<TracerComponent>();
+    _registry.destroy(tracers.begin(), tracers.end());
+    const auto debris = _registry.view<DebrisComponent>();
+    _registry.destroy(debris.begin(), debris.end());
 }
 
 auto RiftScene::SpawnBurst(glm::vec3 origin, glm::vec3 color, int count, float power) -> void {
@@ -445,51 +593,13 @@ auto RiftScene::SpawnBurst(glm::vec3 origin, glm::vec3 color, int count, float p
     }
 }
 
-auto RiftScene::TriggerCrash() -> void {
-    if (_dead) return;
-    _dead = true;
-    _gameOverTime = 0.0f;
-    _shipCameraController->StopHard();
-    SpawnBurst(_camera->Position, glm::vec3(1.0f, 0.45f, 0.08f), 28, 22.0f);
-}
-
-auto RiftScene::RestartRun() -> void {
-    const auto debris = _registry.view<DebrisComponent>();
-    _registry.destroy(debris.begin(), debris.end());
-    const auto tracers = _registry.view<TracerComponent>();
-    _registry.destroy(tracers.begin(), tracers.end());
-    _dead = false;
-    _kills = 0;
-    _fireCooldown = 0.0f;
-    _gameOverTime = 0.0f;
-    _shopOpen = false;
-    _boostLeft = 0.0f;
-    _toastLeft = 0.0f;
-    _ammo = _ammoMax;
-    _camera->Position = glm::vec3(0.0f, Settings.Camera.SpawnHeight, 0.0f);
-    _camera->SetOrientation(glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
-    _shipCameraController->ResetMotion();
-    ApplyLoadout();
-    SpawnAliens();
-}
-
-auto RiftScene::TickCombat(float deltaTime) -> void {
-    if (_dead) {
-        _gameOverTime += deltaTime;
-    } else {
-        const float ground = RiftTerrain::SampleHeight(
-            _camera->Position.x, _camera->Position.z,
-            Settings.Terrain.Size, Settings.Terrain.SpikeAmplitude
-        );
-        if (_camera->Position.y < ground) {
-            _camera->Position.y = ground;
-            TriggerCrash();
-        }
-    }
+auto RiftScene::TickCombat(float deltaTime, bool canFire) -> void {
+    const auto& combat = RiftStore::Get().Combat;
+    const bool hunting = _delivery && !_dying;
 
     _fireCooldown = std::max(0.0f, _fireCooldown - deltaTime);
-    if (!_dead && _ammo > 0 && _fireCooldown <= 0.0f && _gameIns->Input->GetMouseButton(GLFW_MOUSE_BUTTON_LEFT)) {
-        _fireCooldown = Settings.Combat.FireCooldown;
+    if (canFire && _ammo > 0 && _fireCooldown <= 0.0f && _gameIns->Input->GetMouseButton(GLFW_MOUSE_BUTTON_LEFT)) {
+        _fireCooldown = combat.FireCooldown;
         --_ammo;
         auto tracerProp = _assetRegistry.GetProp("tracer").lock();
         if (tracerProp) {
@@ -502,12 +612,13 @@ auto RiftScene::TickCombat(float deltaTime) -> void {
                     .Scale = glm::vec3(0.25f, 0.25f, 2.8f)
                 }
                 ,RenderComponent { .Prop = tracerProp, .CastShadows = false }
-                ,TracerComponent { .Velocity = _camera->GetFront() * Settings.Combat.TracerSpeed, .Life = Settings.Combat.TracerLife, .Spent = false }
+                ,TracerComponent { .Velocity = _camera->GetFront() * combat.TracerSpeed, .Life = combat.TracerLife, .Spent = false }
             );
         }
     }
 
     std::vector<entt::entity> doomed;
+    int respawns = 0;
     auto tracers = _registry.view<TransformComponent, TracerComponent>();
     for (auto entity : tracers) {
         auto& transform = tracers.get<TransformComponent>(entity);
@@ -518,16 +629,16 @@ auto RiftScene::TickCombat(float deltaTime) -> void {
         bool hit = false;
         auto aliens = _registry.view<TransformComponent, AlienComponent>();
         for (auto alienEntity : aliens) {
-            auto& alienTransform = aliens.get<TransformComponent>(alienEntity);
+            const auto& alienTransform = aliens.get<TransformComponent>(alienEntity);
             const auto& alien = aliens.get<AlienComponent>(alienEntity);
-            if (glm::length(alienTransform.Position - transform.Position) <= alien.HitRadius + Settings.Combat.TracerHitRadius) {
+            if (glm::length(alienTransform.Position - transform.Position) <= alien.HitRadius + combat.TracerHitRadius) {
                 const glm::vec3 boomAt = alienTransform.Position;
                 doomed.push_back(alienEntity);
                 doomed.push_back(entity);
                 ++_kills;
-                _ammo = std::min(_ammo + Settings.Combat.AmmoPerKill, _ammoMax);
+                _ammo = std::min(_ammo + combat.AmmoPerKill, _ammoMax);
                 SpawnBurst(boomAt, glm::vec3(0.35f, 1.6f, 0.4f), 14, 10.0f);
-                SpawnAlienAround(_camera->Position);
+                ++respawns;
                 hit = true;
                 break;
             }
@@ -537,7 +648,7 @@ auto RiftScene::TickCombat(float deltaTime) -> void {
         }
     }
 
-    if (!_dead) {
+    if (hunting) {
         auto aliens = _registry.view<TransformComponent, AlienComponent>();
         for (auto [entity, transform, alien] : aliens.each()) {
             const glm::vec3 toShip = _camera->Position - transform.Position;
@@ -548,8 +659,8 @@ auto RiftScene::TickCombat(float deltaTime) -> void {
                 transform.Rotation = glm::normalize(glm::quatLookAtLH(dir, glm::vec3(0.0f, 1.0f, 0.0f)));
             }
             transform.Position.y += std::sin(_time * 3.0f + alien.Wobble) * 4.0f * deltaTime;
-            if (distance <= Settings.Combat.CatchRadius) {
-                TriggerCrash();
+            if (distance <= combat.CatchRadius) {
+                StartDeath();
             }
         }
     }
@@ -579,53 +690,52 @@ auto RiftScene::TickCombat(float deltaTime) -> void {
             _registry.destroy(entity);
         }
     }
+
+    if (hunting) {
+        for (int i = 0; i < respawns; ++i) SpawnAlienAround(_camera->Position);
+    }
 }
 
+// shop /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 auto RiftScene::ApplyLoadout() -> void {
-    _ammoMax = Settings.Combat.StartingAmmo + _gunLevel * 4;
+    const auto& shop = RiftStore::Get().Shop;
+    auto& combat = RiftStore::Get().Combat;
+    _ammoMax = combat.StartingAmmo + _gunLevel * 4;
     _ammo = std::min(_ammo, _ammoMax);
-    const float boost = _boostLeft > 0.0f ? Settings.Gig.BoostMul : 1.0f;
+    const float boost = _boostLeft > 0.0f ? shop.BoostMul : 1.0f;
     _shipCameraController->SpeedMul = (1.0f + 0.15f * static_cast<float>(_speedLevel)) * boost;
-    Settings.Combat.FireCooldown = 0.11f * std::pow(0.84f, static_cast<float>(_gunLevel));
-    Settings.Combat.TracerSpeed = 260.0f + 40.0f * static_cast<float>(_gunLevel);
+    combat.FireCooldown = 0.11f * std::pow(0.84f, static_cast<float>(_gunLevel));
+    combat.TracerSpeed = 260.0f + 40.0f * static_cast<float>(_gunLevel);
 }
 
 auto RiftScene::TryBuy(int& level, int baseCost) -> bool {
+    if (!_delivery) return false;
     const int cost = baseCost * (level + 1);
-    if (_credits < cost || level >= 5) return false;
-    _credits -= cost;
+    if (_delivery->GetCredits() < cost || level >= RiftStore::Get().Shop.MaxLevel) return false;
+    _delivery->SetCredits(_delivery->GetCredits() - cost);
     ++level;
     _toastLeft = 1.0f;
+    ApplyLoadout();
     return true;
 }
 
-auto RiftScene::SettleDelivery(float speed) -> void {
-    const int pay = Settings.Gig.BasePay + _styleLevel * 4;
-    int tip = 0;
-    const float chance = Settings.Gig.PatrolTipChance + 0.06f * static_cast<float>(_styleLevel);
-    if (RandomRange(0.0f, 1.0f) < chance) {
-        tip = static_cast<int>(Settings.Gig.PatrolTipMin + speed * Settings.Gig.PatrolTipSpeedScale + 3.0f * static_cast<float>(_styleLevel));
-    }
-    _credits += pay + tip;
-    _lastPay = pay;
-    _lastTip = tip;
-    _toastLeft = 1.6f;
-}
-
-auto RiftScene::TickGigs(float deltaTime) -> void {
+auto RiftScene::TickShop(float deltaTime) -> void {
+    const auto& shop = RiftStore::Get().Shop;
     _toastLeft = std::max(0.0f, _toastLeft - deltaTime);
     _boostLeft = std::max(0.0f, _boostLeft - deltaTime);
 
+    // approaching the contract target lights the screen edge and grants a short speed boost
     float glow = 0.0f;
-    if (_delivery && _delivery->HasTarget()) {
-        const float dist = glm::length(_delivery->TargetPosition() - _camera->Position);
-        if (dist < Settings.Gig.ApproachGlowRadius) {
-            glow = 1.0f - dist / Settings.Gig.ApproachGlowRadius;
-            if (_boostLeft <= 0.0f) _boostLeft = Settings.Gig.BoostSeconds;
+    if (_delivery && !_dying && _delivery->HasContract() && !_delivery->CanComplete()) {
+        const float dist = glm::length(_delivery->GetTargetPosition(_camera->Position) - _camera->Position);
+        if (dist < shop.ApproachGlowRadius) {
+            glow = 1.0f - dist / shop.ApproachGlowRadius;
+            if (_boostLeft <= 0.0f) _boostLeft = shop.BoostSeconds;
         }
     }
     if (_boostLeft > 0.0f) {
-        glow = std::max(glow, 0.35f + 0.65f * (_boostLeft / Settings.Gig.BoostSeconds));
+        glow = std::max(glow, 0.35f + 0.65f * (_boostLeft / shop.BoostSeconds));
     }
     _posterizeMaterial->SetFloat1("Glow", glow);
     ApplyLoadout();

@@ -11,6 +11,7 @@
     FogEnd: float = 45.0
     FogColor: float3 = #334D80
     Enabled: float = 1.0
+    Fade: float = 0.0
     PaletteCount: float = 7.0
     Palette: float3[8] = [#2E4372, #E89128, #F7F052, #D34E24, #8C3318, #1F2C47, #5D3B45]
     Glow: float = 0.0
@@ -45,6 +46,7 @@ struct posterize_material {
     float FogEnd;
     float3 FogColor;
     float Enabled;
+    float Fade;
     float PaletteCount;
     float3 Palette[8];
     float Glow;
@@ -89,7 +91,7 @@ PixelOutput PS(FullscreenVSOutput input) {
         float3 scene = ColorTexture.SampleLevel(PointSampler, input.UV, 0).rgb;
         float4 ui = UITexture.SampleLevel(PointSampler, input.UV, 0);
         PixelOutput passthrough;
-        passthrough.PosterizeOutput = lerp(scene, ui.rgb, saturate(ui.a));
+        passthrough.PosterizeOutput = lerp(scene, ui.rgb, saturate(ui.a)) * (1.0 - _Main.Fade);
         return passthrough;
     }
 
@@ -148,6 +150,6 @@ PixelOutput PS(FullscreenVSOutput input) {
 
     float4 ui = UITexture.SampleLevel(PointSampler, input.UV, 0);
     PixelOutput output;
-    output.PosterizeOutput = lerp(sceneOut, ui.rgb, saturate(ui.a));
+    output.PosterizeOutput = lerp(sceneOut, ui.rgb, saturate(ui.a)) * (1.0 - _Main.Fade);
     return output;
 }

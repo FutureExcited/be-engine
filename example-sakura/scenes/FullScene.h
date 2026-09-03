@@ -3,18 +3,22 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <string>
 
 #include <umbrellas/common.hpp>
 
 #include "BaseScene.h"
 #include "BeAssetRegistry.h"
 #include "BeFileWatcher.h"
+#include "coroutine/BeCoroutineScheduler.h"
 #include "entt/entt.hpp"
 
 class BeCamera;
 class BeStandardRenderMachine;
 class BeLuaState;
 class BeLuaValue;
+class BeMaterial;
+class BeTexture;
 
 enum class ReloadMask : uint8_t {
     None = 0,
@@ -35,6 +39,7 @@ class FullScene : public BaseScene {
     std::unique_ptr<BeStandardRenderMachine> _machine;
     float _time = 0.0f;
     std::unique_ptr<BeLuaState> _sceneLua;
+    BeCoroutineScheduler _coroutineScheduler;
 
     hide
     std::filesystem::path _sceneWatchFilePath;
@@ -59,7 +64,12 @@ class FullScene : public BaseScene {
     virtual auto DefineScene() -> void {}
     virtual auto DefinePasses() -> void {}
 
-    auto ApplyBaseSettings(const BeLuaValue& data) -> void;
-    auto ApplyBaseScene(const BeLuaValue& objects) -> void;
+    auto ApplyLuaSettings(const BeLuaValue& settings) -> void;
+    auto ApplyLuaAssets(const BeLuaValue& assets) -> void;
+    auto ApplyLuaScene(const BeLuaValue& objects) -> void;
     auto SetWatchFile(std::filesystem::path filePath, std::function<void()> onReload) -> void;
+
+    hide
+    auto ResolveTexture(const BeLuaValue& value) -> std::shared_ptr<BeTexture>;
+    auto ApplyMaterialSet(BeMaterial& material, const std::string& key, const BeLuaValue& value) -> void;
 };

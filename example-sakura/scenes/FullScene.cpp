@@ -1,11 +1,16 @@
 #include "FullScene.h"
 
+#include <cstdio>
 #include <span>
 #include <vector>
 
 #include "BeCamera.h"
 #include "BeMaterial.h"
+#include "BeMeshPrimitives.h"
+#include "BeProp.h"
 #include "BeRenderer.h"
+#include "BeShaderLibrary.h"
+#include "BeTexture.h"
 #include "Components.h"
 #include "Game.h"
 #include "lua/BeLua.h"
@@ -34,6 +39,8 @@ auto FullScene::OnLoad() -> void {
 }
 
 auto FullScene::OnUnload() -> void {
+    _coroutineScheduler.Clear();
+
     if (_sceneWatch != 0) {
         BeFileWatcher::Unregister(_sceneWatch);
         _sceneWatch = 0;
@@ -58,7 +65,7 @@ auto FullScene::Prepare() -> void {
     _camera->Width = screenWidth;
     _camera->Height = screenHeight;
 
-    _machine = std::make_unique<BeStandardRenderMachine>(_gameIns->Renderer, _assetRegistry, screenWidth, screenHeight);
+    _machine = std::make_unique<BeStandardRenderMachine>(_gameIns->Renderer, screenWidth, screenHeight);
 
     Reload(ReloadMask::All);
 }
@@ -72,6 +79,8 @@ auto FullScene::Reload(ReloadMask mask) -> void {
 
 auto FullScene::Tick(float deltaTime) -> void {
     _time += deltaTime;
+
+    _coroutineScheduler.Update(deltaTime);
 
     for (const auto [_, transform, circling] : _registry.view<TransformComponent, CirclingComponent>().each()) {
         const auto reference = std::abs(circling.Axis.y) > 0.999f ? glm::vec3(0.f, 0.f, 1.f) : glm::vec3(0.f, 1.f, 0.f);
@@ -94,6 +103,7 @@ auto FullScene::Tick(float deltaTime) -> void {
     uniformMat.SetMatrix("CameraInverseProjectionView", glm::inverse(projView));
     uniformMat.SetFloat4("NearFarPlane", { _camera->NearPlane, _camera->FarPlane, 1.0f / _camera->NearPlane, 1.0f / _camera->FarPlane });
     uniformMat.SetFloat3("CameraPosition", _camera->Position);
+    uniformMat.SetFloat1("Time", _time);
 }
 
 auto FullScene::Render() -> void {
@@ -139,7 +149,7 @@ auto FullScene::Render() -> void {
     }
 }
 
-auto FullScene::ApplyBaseSettings(const BeLuaValue& settings) -> void {
+auto FullScene::ApplyLuaSettings(const BeLuaValue& settings) -> void {
     const auto srm = settings["srm"];
     _machine->Settings.Shadow.Bias = srm["shadow"]["bias"].GetOr(_machine->Settings.Shadow.Bias);
     _machine->Settings.IBL.MaxSampleRadiance = srm["ibl"]["maxSampleRadiance"].GetOr(_machine->Settings.IBL.MaxSampleRadiance);
@@ -169,9 +179,7 @@ auto FullScene::ApplyBaseSettings(const BeLuaValue& settings) -> void {
     }
 }
 
-auto FullScene::ApplyBaseScene(const BeLuaValue& objects) -> void {
-    _registry.clear();
-
+auto FullScene::ApplyLuaScene(const BeLuaValue& objects) -> void {
     for (const auto& [name, entityTable] : objects.Pairs()) {
         const auto entity = _registry.create();
         _registry.emplace<NameComponent>(entity, NameComponent{ .Name = name });
@@ -233,5 +241,116 @@ auto FullScene::ApplyBaseScene(const BeLuaValue& objects) -> void {
             comp.ShadowNearPlane = table["shadowNearPlane"].GetOr(comp.ShadowNearPlane);
             _registry.emplace<PointLightComponent>(entity, comp);
         }
+    }
+}
+
+auto FullScene::ApplyLuaAssets(const BeLuaValue& assets) -> void {
+    for (const auto& [name, texture] : assets["textures"].Pairs()) {
+        const auto file = texture["file"].Get<std::string>();
+        if (!file) {
+            std::fprintf(stderr, "[lua] texture '%s' has no file, skipping\n", name.c_str());
+            continue;
+        }
+        BeTexture::Create(name)
+            .LoadFromFile(*file)
+            .AddToRegistry(_assetRegistry)
+            .BuildNoReturn();
+    }
+
+    for (const auto& [name, propDef] : assets["props"].Pairs()) {
+        const auto shaderName = propDef["shader"].Get<std::string>();
+        if (!shaderName) {
+            std::fprintf(stderr, "[lua] prop '%s' has no shader, skipping\n", name.c_str());
+            continue;
+        }
+        const auto shader = BeShaderLibrary::GetShader(*shaderName);
+
+        const auto meshDef = propDef["mesh"];
+        std::shared_ptr<BeProp> prop;
+        
+        if (const auto file = meshDef["file"].Get<std::string>()) {
+            const auto model = meshDef["lighting"].GetOr(std::string("pbr")) == "phong"
+                ? BeSRMLightingModel::Phong
+                : BeSRMLightingModel::PBR;
+            prop = _machine->LoadProp(*file, shader, model);
+        }
+        else {
+            const auto primitive = meshDef["primitive"].GetOr(std::string("cube"));
+            std::shared_ptr<BeMesh> mesh;
+            if (primitive == "plane") {
+                mesh = BeMeshPrimitives::Plane(meshDef["subdivisions"].GetOr(1u));
+            } else if (primitive == "sphere") {
+                mesh = BeMeshPrimitives::Sphere(meshDef["rings"].GetOr(16u), meshDef["segments"].GetOr(32u));
+            } else {
+                mesh = BeMeshPrimitives::Cube();
+            }
+            prop = BeProp::FromMesh(mesh, shader, propDef["material"].GetOr(std::string("geometry-main")));
+            _machine->RegisterMesh(prop->Mesh);
+        }
+
+        for (const auto& [key, value] : propDef["set"].Pairs()) {
+            for (const auto& material : prop->Materials) {
+                ApplyMaterialSet(*material, key, value);
+            }
+        }
+
+        _assetRegistry.AddProp(name, prop);
+    }
+}
+
+auto FullScene::ResolveTexture(const BeLuaValue& value) -> std::shared_ptr<BeTexture> {
+    if (const auto name = value.Get<std::string>()) {
+        if (!_assetRegistry.HasTexture(*name)) {
+            std::fprintf(stderr, "[lua] texture '%s' is not registered\n", name->c_str());
+            return nullptr;
+        }
+        return _assetRegistry.GetTexture(*name).lock();
+    }
+
+    const auto name = value["name"].Get<std::string>();
+    const auto file = value["file"].Get<std::string>();
+    if (!name || !file) {
+        std::fprintf(stderr, "[lua] inline texture needs a name and a file\n");
+        return nullptr;
+    }
+    return BeTexture::Create(*name)
+        .LoadFromFile(*file)
+        .AddToRegistry(_assetRegistry)
+        .Build();
+}
+
+auto FullScene::ApplyMaterialSet(BeMaterial& material, const std::string& key, const BeLuaValue& value) -> void {
+    const auto& scheme = material.GetScheme();
+
+    for (const auto& property : scheme.Properties) {
+        if (property.Name != key) { continue; }
+        
+        switch (property.PropertyType) {
+            using enum BeMaterialPropertyDescriptor::Type;
+            case Float:  if (const auto v = value.Get<float>())     material.SetFloat1(key, *v); break;
+            case Float2: if (const auto v = value.Get<glm::vec2>()) material.SetFloat2(key, *v); break;
+            case Float3: if (const auto v = value.Get<glm::vec3>()) material.SetFloat3(key, *v); break;
+            case Float4: if (const auto v = value.Get<glm::vec4>()) material.SetFloat4(key, *v); break;
+            case Matrix: break;
+        }
+        return;
+    }
+
+    for (const auto& texture : scheme.Textures) {
+        if (texture.Name != key) { continue; }
+        
+        if (const auto resolved = ResolveTexture(value)) {
+            material.SetTexture(key, resolved);
+        }
+        return;
+    }
+
+    for (const auto& sampler : scheme.Samplers) {
+        if (sampler.Name != key) { continue; }
+        
+        if (const auto name = value.Get<std::string>()) {
+            material.SetSampler(key, BeShaderLibrary::GetSampler(*name));
+        }
+        return;
     }
 }

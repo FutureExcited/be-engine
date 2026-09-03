@@ -9,7 +9,8 @@
     PipHalf: float = 1.0
     BracketOffset: float = 6.0
     BracketArm: float = 3.0
-    TickLength: float = 2.0
+    TickLength: float = 3.0
+    GroundTickLength: float = 2.0
     AimBoxHalf: float = 1.0
     DashPeriod: float = 2.0
     UiColor: float3 = (0.93, 0.91, 0.84)
@@ -30,7 +31,6 @@
     Shop: float = 0.0
     SpeedLvl: float = 0.0
     GunLvl: float = 0.0
-    StyleLvl: float = 0.0
     PayFlash: float = 0.0
 }
 
@@ -65,6 +65,7 @@ struct ship_hud_material {
     float BracketOffset;
     float BracketArm;
     float TickLength;
+    float GroundTickLength;
     float AimBoxHalf;
     float DashPeriod;
     float3 UiColor;
@@ -84,7 +85,6 @@ struct ship_hud_material {
     float Shop;
     float SpeedLvl;
     float GunLvl;
-    float StyleLvl;
     float PayFlash;
 };
 
@@ -146,6 +146,11 @@ PixelOutput PS(FullscreenVSOutput input) {
     float barAcross = dot(d, barPerp);
     if (abs(abs(barAlong) - aimR) <= _Main.TickLength && abs(barAcross) <= hw + 0.5) hit = 1.0;
 
+    // ground indicator: drop from each tick's inner corner toward the ground (+barPerp)
+    float innerEnd = aimR - _Main.TickLength + 0.5;
+    if (abs(abs(barAlong) - innerEnd) <= 0.5 && barAcross >= 0.5 && barAcross <= _Main.GroundTickLength + 0.5) hit = 1.0;
+
+    // aim marker: solid box, snapped to the cell grid
     float2 aimD = floor(aimPos / ps) - c0;
     float2 da = abs(d - aimD);
     if (max(da.x, da.y) <= _Main.AimBoxHalf) hit = 1.0;
@@ -217,13 +222,13 @@ PixelOutput PS(FullscreenVSOutput input) {
 
     if (_Main.Shop > 0.5) {
         float2 shop0 = float2(-26.0, -22.0);
-        float2 shop1 = shop0 + float2(52.0, 44.0);
+        float2 shop1 = shop0 + float2(52.0, 33.0);
         hit = max(hit, Frame(d, shop0, shop1, 1.0));
         hit = max(hit, Box(d, shop0, shop1) * 0.10);
         // title bar
         hit = max(hit, Box(d, shop0, shop0 + float2(52.0, 4.0)));
-        for (int rail = 0; rail < 3; rail++) {
-            float filled = (rail == 0) ? _Main.SpeedLvl : ((rail == 1) ? _Main.GunLvl : _Main.StyleLvl);
+        for (int rail = 0; rail < 2; rail++) {
+            float filled = (rail == 0) ? _Main.SpeedLvl : _Main.GunLvl;
             float2 r0 = shop0 + float2(4.0, 8.0 + rail * 11.0);
             // key pip 1/2/3
             hit = max(hit, Box(d, r0, r0 + float2(4.0, 4.0)));
