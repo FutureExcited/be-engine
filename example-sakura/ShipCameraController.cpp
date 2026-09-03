@@ -12,7 +12,26 @@ ShipCameraController::ShipCameraController(BeCamera* camera)
     : _camera(camera)
 {}
 
+auto ShipCameraController::ResetMotion() -> void {
+    _velocity = {};
+    _angularVelocity = {};
+    _aim = {};
+    Frozen = false;
+}
+
+auto ShipCameraController::StopHard() -> void {
+    _velocity = {};
+    _angularVelocity = {};
+    Frozen = true;
+}
+
 auto ShipCameraController::Update(float deltaTime, BeInput* input) -> void {
+    if (Frozen) {
+        input->SetMouseCapture(true);
+        _camera->Update();
+        return;
+    }
+
     const float dt = deltaTime;
 
     glm::vec3 targetOmega{0.0f};
@@ -52,7 +71,7 @@ auto ShipCameraController::Update(float deltaTime, BeInput* input) -> void {
     if (input->GetKey(GLFW_KEY_Q)) thrust -= up;
     if (input->GetKey(GLFW_KEY_E)) thrust += up;
 
-    float accel = ThrustAccel;
+    float accel = ThrustAccel * std::max(SpeedMul, 0.1f);
     if (input->GetKey(GLFW_KEY_LEFT_SHIFT)) accel *= BoostMultiplier;
 
     if (glm::length(thrust) > 0.0001f)
@@ -67,7 +86,8 @@ auto ShipCameraController::Update(float deltaTime, BeInput* input) -> void {
     }
 
     const float speed = glm::length(_velocity);
-    if (speed > MaxSpeed) _velocity *= MaxSpeed / speed;
+    const float cap = MaxSpeed * std::max(SpeedMul, 0.1f);
+    if (speed > cap) _velocity *= cap / speed;
 
     _camera->Position += _velocity * dt;
     _camera->Update();

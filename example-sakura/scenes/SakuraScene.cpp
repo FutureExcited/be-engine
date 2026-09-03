@@ -38,6 +38,9 @@ void SakuraScene::Prepare() {
 
     _orbitCameraController = std::make_unique<OrbitCameraController>(_camera.get());
     _freeCameraController = std::make_unique<FreeCameraController>(_camera.get());
+    _freeCameraController->VerticalUpKey = GLFW_KEY_SPACE;
+    _freeCameraController->VerticalDownKey = GLFW_KEY_LEFT_SHIFT;
+    _freeCameraController->ShiftBoostsSpeed = false;
 }
 
 auto SakuraScene::DefineAssets() -> void {

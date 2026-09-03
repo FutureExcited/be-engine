@@ -35,6 +35,24 @@ struct NameComponent {
 
 struct StaticTag {};
 
+struct AlienComponent {
+    float HitRadius = 6.0f;
+    float Speed = 18.0f;
+    float Wobble = 0.0f;
+};
+
+struct TracerComponent {
+    glm::vec3 Velocity = {0.0f, 0.0f, 0.0f};
+    float Life = 0.18f;
+    bool Spent = false;
+};
+
+struct DebrisComponent {
+    glm::vec3 Velocity = {0.0f, 0.0f, 0.0f};
+    float Life = 1.2f;
+    float MaxLife = 1.2f;
+};
+
 struct SunLightComponent {
     // light
     glm::vec3 Direction = {0.f, -1.f, 0.f};

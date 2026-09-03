@@ -13,6 +13,8 @@
     Enabled: float = 1.0
     PaletteCount: float = 7.0
     Palette: float3[8] = [#2E4372, #E89128, #F7F052, #D34E24, #8C3318, #1F2C47, #5D3B45]
+    Glow: float = 0.0
+    GlowColor: float3 = #FFC14A
 }
 
 @be-shader posterize {
@@ -45,6 +47,8 @@ struct posterize_material {
     float Enabled;
     float PaletteCount;
     float3 Palette[8];
+    float Glow;
+    float3 GlowColor;
 };
 
 cbuffer CBuffer_0 : register(b0, space0) {
@@ -137,6 +141,10 @@ PixelOutput PS(FullscreenVSOutput input) {
     float dithered = saturate(0.5 + (t - 0.5) / max(strength, 1e-4));
 
     float3 sceneOut = (threshold < dithered) ? second : best;
+
+    float2 fromCenter = input.UV - 0.5;
+    float edge = saturate((length(fromCenter) - 0.40) / 0.10);
+    sceneOut += _Main.GlowColor * _Main.Glow * edge;
 
     float4 ui = UITexture.SampleLevel(PointSampler, input.UV, 0);
     PixelOutput output;

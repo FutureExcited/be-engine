@@ -25,13 +25,16 @@ auto FreeCameraController::Update(float deltaTime, BeInput* input) -> void {
     }
 
     float speed = MoveSpeed * deltaTime;
-    if (input->GetKey(GLFW_KEY_LEFT_SHIFT) || (input->IsGamepadConnected() && input->GetGamepadButton(GLFW_GAMEPAD_BUTTON_LEFT_BUMPER))) speed *= 2.0f;
+    const bool shiftHeld = input->GetKey(GLFW_KEY_LEFT_SHIFT) || input->GetKey(GLFW_KEY_RIGHT_SHIFT);
+    if ((ShiftBoostsSpeed && shiftHeld) || (input->IsGamepadConnected() && input->GetGamepadButton(GLFW_GAMEPAD_BUTTON_LEFT_BUMPER))) speed *= 2.0f;
     if (input->GetKey(GLFW_KEY_W)) _targetPosition += _camera->GetFront() * speed;
     if (input->GetKey(GLFW_KEY_S)) _targetPosition -= _camera->GetFront() * speed;
     if (input->GetKey(GLFW_KEY_D)) _targetPosition += _camera->GetRight() * speed;
     if (input->GetKey(GLFW_KEY_A)) _targetPosition -= _camera->GetRight() * speed;
-    if (input->GetKey(GLFW_KEY_E)) _targetPosition += glm::vec3(0, 1, 0) * speed;
-    if (input->GetKey(GLFW_KEY_Q)) _targetPosition -= glm::vec3(0, 1, 0) * speed;
+    if (input->GetKey(VerticalUpKey)) _targetPosition += glm::vec3(0, 1, 0) * speed;
+    if (input->GetKey(VerticalDownKey) || (VerticalDownKey == GLFW_KEY_LEFT_SHIFT && shiftHeld)) {
+        _targetPosition -= glm::vec3(0, 1, 0) * speed;
+    }
 
     // Gamepad movement
     if (input->IsGamepadConnected()) {

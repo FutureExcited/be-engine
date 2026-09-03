@@ -26,12 +26,17 @@ class ShipCameraController {
     float FlightAssistDamping = 2.0f;
     float FullStopDamping = 6.0f;
     bool FlightAssist = true;
+    bool Frozen = false;
+    float SpeedMul = 1.0f;
 
     explicit ShipCameraController(BeCamera* camera);
 
     auto Update(float deltaTime, BeInput* input) -> void;
     auto DrawDebugUI() -> void;
+    auto ResetMotion() -> void;
+    auto StopHard() -> void;
     [[nodiscard]] auto GetAim() const -> glm::vec2 { return _aim; }
+    [[nodiscard]] auto GetVelocity() const -> glm::vec3 { return _velocity; }
 
     hide
     BeCamera* _camera;

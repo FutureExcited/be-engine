@@ -1,5 +1,6 @@
 #pragma once
 
+#include <umbrellas/include-glfw.h>
 #include <umbrellas/include-glm.h>
 #include <umbrellas/common.hpp>
 
@@ -17,6 +18,9 @@ class FreeCameraController {
     float ZoomSpeed = 30.0f;
     float MinMoveSpeed = 0.5f;
     float MaxMoveSpeed = 200.0f;
+    int VerticalUpKey = GLFW_KEY_E;
+    int VerticalDownKey = GLFW_KEY_Q;
+    bool ShiftBoostsSpeed = true;
 
     // Exponential smoothing sharpness (higher = snappier, lower = floatier).
     float PositionSmoothing = 12.0f;

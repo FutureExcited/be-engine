@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <random>
 #include <string>
 #include <vector>
 #include <umbrellas/common.hpp>
@@ -14,12 +15,11 @@
 class ShipCameraController;
 class DeliverySystem;
 class BeMaterial;
-class BeImGuiPass;
 
 struct RiftSceneSettings {
     struct {
         float NearPlane = 0.5f;
-        float FarPlane = 300.0f;
+        float FarPlane = 1100.0f;
         float SpawnHeight = 100.0f;
     } Camera;
 
@@ -41,8 +41,8 @@ struct RiftSceneSettings {
     struct {
         float PixelSize = 4.0f;
         float DitherSpread = 1.0f;
-        float FogStart = 100.0f;
-        float FogEnd = 200.0f;
+        float FogStart = 280.0f;
+        float FogEnd = 900.0f;
         glm::vec3 FogColor = HexColor("#2E4372");
         bool Enabled = true;
         std::vector<glm::vec3> Palette = {
@@ -151,6 +151,37 @@ struct RiftSceneSettings {
             float FadeFar = 200.0f;
         } Marker;
     } Delivery;
+
+    struct {
+        float HullRadius = 2.0f;
+        int AlienCount = 16;
+        float AlienHitRadius = 16.0f;
+        float AlienMinSpeed = 11.0f;
+        float AlienMaxSpeed = 20.0f;
+        float AlienSpawnNear = 220.0f;
+        float AlienSpawnFar = 1400.0f;
+        float AlienMinAltitude = 20.0f;
+        float CatchRadius = 10.0f;
+        float FireCooldown = 0.11f;
+        float TracerSpeed = 260.0f;
+        float TracerLife = 0.85f;
+        float TracerHitRadius = 2.5f;
+        int StartingAmmo = 18;
+        int AmmoPerKill = 3;
+    } Combat;
+
+    struct {
+        float ApproachGlowRadius = 70.0f;
+        float BoostMul = 1.20f;
+        float BoostSeconds = 10.0f;
+        int BasePay = 12;
+        float PatrolTipChance = 0.32f;
+        float PatrolTipMin = 6.0f;
+        float PatrolTipSpeedScale = 0.45f;
+        int SpeedCost = 40;
+        int GunCost = 50;
+        int StyleCost = 30;
+    } Gig;
 };
 
 class RiftScene : public FullScene {
@@ -160,6 +191,23 @@ class RiftScene : public FullScene {
     std::array<entt::entity, 9> _terrainTiles;
     std::shared_ptr<BeMaterial> _posterizeMaterial;
     std::shared_ptr<BeMaterial> _hudMaterial;
+    std::mt19937 _combatRng{1337};
+    bool _dead = false;
+    int _kills = 0;
+    float _fireCooldown = 0.0f;
+    float _gameOverTime = 0.0f;
+    bool _shopOpen = false;
+    int _credits = 0;
+    int _speedLevel = 0;
+    int _gunLevel = 0;
+    int _styleLevel = 0;
+    float _boostLeft = 0.0f;
+    float _toastLeft = 0.0f;
+    std::string _toast;
+    int _ammo = 18;
+    int _ammoMax = 18;
+    int _lastPay = 0;
+    int _lastTip = 0;
 
     expose
     RiftSceneSettings Settings;
@@ -173,6 +221,17 @@ class RiftScene : public FullScene {
     hide
     auto EnterPlayMode() -> void;
     auto ExitPlayMode() -> void;
+    auto RandomRange(float lo, float hi) -> float;
+    auto SpawnAliens() -> void;
+    auto SpawnAlienAround(glm::vec3 origin) -> void;
+    auto SpawnBurst(glm::vec3 origin, glm::vec3 color, int count, float power) -> void;
+    auto TriggerCrash() -> void;
+    auto RestartRun() -> void;
+    auto TickCombat(float deltaTime) -> void;
+    auto ApplyLoadout() -> void;
+    auto TickGigs(float deltaTime) -> void;
+    auto SettleDelivery(float speed) -> void;
+    auto TryBuy(int& level, int baseCost) -> bool;
 
     protect
     auto DefineAssets() -> void override;
